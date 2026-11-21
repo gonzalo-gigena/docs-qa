@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
-FROM python:3.14.10-slim AS deps
+FROM python:3.15.2-slim AS deps
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY requirements.txt /tmp/
 RUN python -m venv /venv && /venv/bin/pip install -r /tmp/requirements.txt
 
-FROM python:3.14.10-slim
+FROM python:3.15.2-slim
 ENV PATH=/venv/bin:$PATH PYTHONUNBUFFERED=1
 RUN useradd --create-home app
 WORKDIR /app
