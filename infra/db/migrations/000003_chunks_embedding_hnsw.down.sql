@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS chunks_embedding_hnsw;

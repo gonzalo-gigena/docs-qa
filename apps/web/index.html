@@ -3,31 +3,129 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Template up</title>
+  <title>Docs Q&amp;A</title>
   <style>
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
-    code { font-size: 1.1em; }
+    body { max-width: 56rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+    form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
+    th, td { padding: .5rem; text-align: left; border-bottom: 1px solid #8884; vertical-align: top; }
+    td:first-child { overflow-wrap: anywhere; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .ready { color: light-dark(#176b36, #6fd796); }
+    .failed, .error { color: light-dark(#a11d1d, #ff8d8d); }
+    progress { display: block; width: 8rem; }
   </style>
 </head>
 <body>
-  <h1>It runs.</h1>
-  <p>Message from the database: <code id="msg">…</code></p>
-  <p>Served by api replica: <code id="replica">…</code></p>
-  <p>Run <code>docker compose up -d --scale api=3</code> and watch the replica change.</p>
+  <main>
+    <h1>Documents</h1>
+    <form id="upload">
+      <label for="files">PDF, HTML or Markdown, up to 25 MB</label>
+      <input id="files" type="file" accept=".pdf,.html,.htm,.md,.markdown" multiple required>
+      <button>Upload</button>
+    </form>
+    <p id="message" role="status"></p>
+    <p id="offline" class="error" role="alert"></p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Document</th>
+            <th scope="col">Status</th>
+            <th scope="col" class="num">Version</th>
+            <th scope="col" class="num">Pages</th>
+            <th scope="col" class="num">Chunks</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="5">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </main>
   <script>
-    async function tick() {
+    const $ = (id) => document.getElementById(id);
+
+    function el(tag, text = '', className = '') {
+      const node = document.createElement(tag);
+      node.textContent = text; // never innerHTML: names and errors come from uploaded files
+      node.className = className;
+      return node;
+    }
+
+    function row(doc) {
+      const status = el('td', doc.status, doc.status);
+      if (doc.error) status.append(el('div', doc.error));
+      if (doc.status === 'embedding' && doc.chunks_total) {
+        const bar = el('progress');
+        bar.max = doc.chunks_total;
+        bar.value = doc.chunks_done;
+        bar.setAttribute('aria-label', `Embedding ${doc.name}`);
+        status.append(` ${doc.chunks_done}/${doc.chunks_total}`, bar);
+      }
+      const tr = el('tr');
+      tr.append(el('td', doc.name), status, el('td', doc.version, 'num'), el('td', doc.pages ?? '–', 'num'),
+        el('td', doc.chunks_total ?? '–', 'num'));
+      return tr;
+    }
+
+    let shown;
+    async function refresh() {
       try {
-        const r = await fetch('/api/hello');
-        const body = await r.json();
-        document.getElementById('msg').textContent = body.message ?? '(no rows, run: docker compose run --rm seed)';
-        document.getElementById('replica').textContent = body.replica;
+        const res = await fetch('/api/documents');
+        if (!res.ok) throw new Error(res.status);
+        const { documents } = await res.json();
+        $('offline').textContent = '';
+        const next = JSON.stringify(documents);
+        if (next === shown) return;
+        shown = next;
+        if (documents.length) return $('rows').replaceChildren(...documents.map(row));
+        const none = el('td', 'No documents yet.');
+        none.colSpan = 5;
+        const tr = el('tr');
+        tr.append(none);
+        $('rows').replaceChildren(tr);
       } catch {
-        document.getElementById('replica').textContent = 'api unreachable';
+        $('offline').textContent = 'Can’t reach the API. Retrying…';
       }
     }
-    tick();
-    setInterval(tick, 1000);
+
+    async function upload(file) {
+      // Checked here too: past the limit Caddy closes the connection mid-upload and fetch only sees an error.
+      if (file.size > 25 * 1024 * 1024) return `${file.name}: the file is over 25 MB`;
+      const body = new FormData();
+      body.append('file', file);
+      try {
+        const res = await fetch('/api/documents', { method: 'POST', body });
+        const data = await res.json().catch(() => ({})); // the proxy's 413 has no JSON body
+        if (!res.ok) return `${file.name}: ${data.error ?? (res.status === 413 ? 'the file is over 25 MB' : `upload failed (${res.status})`)}`;
+        if (data.unchanged) return `${file.name}: unchanged, nothing to do (${data.status})`;
+        return `${file.name}: queued`;
+      } catch {
+        return `${file.name}: upload failed, the connection was lost`;
+      }
+    }
+
+    $('upload').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = event.target.querySelector('button');
+      const files = [...$('files').files];
+      const results = [];
+      button.disabled = true;
+      for (const file of files) {
+        $('message').textContent = `Uploading ${file.name}…`;
+        results.push(await upload(file));
+        refresh();
+      }
+      $('message').textContent = results.join(' · ');
+      button.disabled = false;
+      event.target.reset();
+    });
+
+    (async function poll() {
+      await refresh();
+      setTimeout(poll, 1000);
+    })();
   </script>
 </body>
 </html>

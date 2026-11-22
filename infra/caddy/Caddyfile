@@ -5,6 +5,9 @@ import /common/caddy/snippets.caddy
 
 	# /metrics, /healthz and /readyz are never routed here, so they stay internal.
 	handle /api/* {
+		request_body {
+			max_size 26MiB # 25 MiB file plus multipart framing. MiB: in Caddy, MB is 1000*1000
+		}
 		import lb api 8080
 	}
 
