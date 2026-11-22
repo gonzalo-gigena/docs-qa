@@ -1,9 +1,17 @@
 # Base stack: prod-like. Dev: `docker compose up --watch` (also loads compose.override.yaml if present).
 # Shared pieces come from the `common` submodule (portfolio-common).
 include:
+  # No env_file needed: the project's variables (shell or .env) reach included files.
   - path: common/observability/compose.yaml
-    env_file: .env
 x-db-url: &db-url postgres://${POSTGRES_USER:?copy .env.example to .env}:${POSTGRES_PASSWORD:?copy .env.example to .env}@db:5432/${POSTGRES_DB:?copy .env.example to .env}?sslmode=disable
+# Shared by api and worker, which run the same image.
+x-app-env: &app-env
+  DATABASE_URL: *db-url
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT: http://storage:7070
+  S3_BUCKET: documents
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?copy .env.example to .env}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?copy .env.example to .env}
 
 services:
   caddy:
@@ -26,8 +34,7 @@ services:
   # Scalable: no container_name, no host ports. `docker compose up --scale api=3`.
   api:
     build: ./apps/api
-    environment:
-      DATABASE_URL: *db-url
+    environment: *app-env
     init: true
     stop_grace_period: 15s
     healthcheck:
@@ -48,6 +55,101 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    mem_limit: 256m
+    restart: unless-stopped
+
+  # Same image as api. Parses, chunks and calls the embedder. `--scale worker=N`.
+  worker:
+    build: ./apps/api
+    command: ["python", "-m", "app.worker"]
+    environment:
+      <<: *app-env
+      EMBEDDER_URL: http://embedder:8080
+    init: true
+    stop_grace_period: 120s # finish the document in progress
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./apps/api/app
+          target: /app/app
+        - action: rebuild
+          path: ./apps/api/requirements.txt
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+      embedder:
+        condition: service_healthy
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # The heaviest service: CPU-bound. Scale it on its own with `--scale embedder=N`.
+  embedder:
+    build: ./apps/embedder
+    environment:
+      EMBED_THREADS: ${EMBED_THREADS:-4}
+    init: true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/readyz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+      start_interval: 2s
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./apps/embedder/app
+          target: /app/app
+        - action: rebuild
+          path: ./apps/embedder/requirements.txt
+    mem_limit: 1024m # measured peak: ~610 MiB
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.10.3-alpine
+    command: ["redis-server", "--appendonly", "yes"] # queued jobs survive a restart
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    mem_limit: 128m
+    restart: unless-stopped
+
+  # S3-compatible storage for the original files. --fsync: an acknowledged upload survives power loss.
+  storage:
+    image: versity/versitygw:v1.11.0
+    command: ["--port", ":7070", "--health", "/health", "--quiet", "posix", "--fsync", "/data"]
+    environment:
+      ROOT_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      ROOT_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - objects:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7070/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
     mem_limit: 256m
     restart: unless-stopped
 
@@ -99,4 +201,6 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
+  objects:
   caddy_data:

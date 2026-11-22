@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS chunks_tsv_gin;

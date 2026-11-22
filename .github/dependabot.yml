@@ -6,6 +6,15 @@ updates:
   - package-ecosystem: docker
     directory: /apps/api
     schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: /apps/embedder
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /apps/embedder
+    schedule: { interval: weekly }
+    ignore:
+      - dependency-name: python # onnxruntime has no 3.15 wheels yet. Remove when it does.
+        versions: [">=3.15"]
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: weekly }

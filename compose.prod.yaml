@@ -1,6 +1,6 @@
 # On the server: docker compose -f compose.yaml -f compose.prod.yaml up -d
 # .env there needs: SITE_ADDRESS=yourdomain.com (Caddy gets TLS automatically), IMAGE_REPO=owner/repo,
-# TAG=<git sha>, a strong POSTGRES_PASSWORD, and no `fakes` in COMPOSE_PROFILES.
+# TAG=<git sha>, a strong POSTGRES_PASSWORD and S3_SECRET_KEY, and no `fakes` in COMPOSE_PROFILES.
 services:
   caddy:
     ports: !override
@@ -11,4 +11,14 @@ services:
   api:
     build: !reset null
     image: ghcr.io/${IMAGE_REPO:?set IMAGE_REPO=owner/repo}/api:${TAG:-latest}
+    pull_policy: always
+
+  worker:
+    build: !reset null
+    image: ghcr.io/${IMAGE_REPO}/api:${TAG:-latest}
+    pull_policy: always
+
+  embedder:
+    build: !reset null
+    image: ghcr.io/${IMAGE_REPO}/embedder:${TAG:-latest}
     pull_policy: always

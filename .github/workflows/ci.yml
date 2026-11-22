@@ -13,21 +13,34 @@ jobs:
         with:
           submodules: true # common/ (portfolio-common must be public, same owner)
       - run: cp .env.example .env
-      - name: Unit tests
-        run: docker run --rm -v "$PWD/apps/api:/src" -w /src python:3.14.10-slim python -m compileall -q app
+      - name: Unit tests (extraction and chunking, in the real image)
+        run: |
+          docker compose -f compose.yaml build api
+          docker compose -f compose.yaml run --rm --no-deps -v "$PWD/apps/api/tests:/app/tests:ro" api python -m unittest discover -v tests
       - name: Stack with 3 api replicas + smoke test
         run: sh common/scripts/ci-stack.sh 3
+      - name: Ingestion end to end (chunks, idempotent re-upload, atomic replace)
+        run: |
+          docker compose -f compose.yaml up -d --wait --build --scale api=3
+          docker compose -f compose.yaml run --rm --no-deps -v "$PWD/apps/api/tests:/app/tests:ro" api python -m tests.e2e_ingest
+      - if: failure()
+        run: docker compose -f compose.yaml logs --tail 200
+      - if: always()
+        run: docker compose -f compose.yaml down -v --remove-orphans
 
   images:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [api, embedder]
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/api" >> "$GITHUB_ENV" # GHCR needs lowercase
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.app }}" >> "$GITHUB_ENV" # GHCR needs lowercase
       # ponytail: QEMU for arm64. Switch to native arm64 runners + manifest merge if builds get slow.
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
@@ -38,9 +51,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v7
         with:
-          context: apps/api
+          context: apps/${{ matrix.app }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE }}:${{ github.sha }},${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
