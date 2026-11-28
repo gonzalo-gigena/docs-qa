@@ -124,7 +124,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8.10.3-alpine
+    image: redis:8.12.0-alpine
     command: ["redis-server", "--appendonly", "yes"] # queued jobs survive a restart
     volumes:
       - redisdata:/data
